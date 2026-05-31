@@ -36,7 +36,7 @@ def clean_clickhouse_partition(partition_id):
 with DAG(
         dag_id='load_dds_to_clickhouse_mart',
         default_args=default_args,
-        schedule_interval='@monthly',
+        schedule_interval=None,
         start_date=pendulum.datetime(2025, 12, 1),
         catchup=False,
         tags=['taxi', 'mart', 'spark', 'clickhouse'],

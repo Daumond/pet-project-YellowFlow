@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from dateutil.relativedelta import relativedelta
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
@@ -96,8 +97,16 @@ with DAG(
         """,
     )
 
+    trigger_mart_load = TriggerDagRunOperator(
+        task_id="trigger_mart_load",
+        trigger_dag_id="load_dds_to_clickhouse_mart",
+        logical_date="{{ logical_date }}",
+        wait_for_completion=False,
+    )
+
     (
     truncate_partition
     >> load_dds
     >> audit_log
+    >> trigger_mart_load
     )
