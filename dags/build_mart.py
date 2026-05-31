@@ -39,6 +39,7 @@ with DAG(
         schedule_interval=None,
         start_date=pendulum.datetime(2025, 12, 1),
         catchup=False,
+        max_active_runs=1,
         tags=['taxi', 'mart', 'spark', 'clickhouse'],
 ) as dag:
     truncate_ch_partition = PythonOperator(
