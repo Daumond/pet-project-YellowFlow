@@ -51,8 +51,8 @@ with DAG(
 
         CREATE EXTERNAL TABLE stg.ext_yellow_tripdata (
             "VendorID" INTEGER,
-            tpep_pickup_datetime BIGINT,
-            tpep_dropoff_datetime BIGINT,
+            tpep_pickup_datetime TIMESTAMP,
+            tpep_dropoff_datetime TIMESTAMP,
             passenger_count BIGINT,
             trip_distance DOUBLE PRECISION,
             "RatecodeID" BIGINT,
@@ -119,8 +119,8 @@ with DAG(
         )
         SELECT
             "VendorID",
-            to_timestamp(tpep_pickup_datetime / 1000000.0)::timestamp,
-            to_timestamp(tpep_dropoff_datetime / 1000000.0)::timestamp,
+            tpep_pickup_datetime,
+            tpep_dropoff_datetime,
             passenger_count,
             trip_distance,
             "RatecodeID",
