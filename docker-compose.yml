@@ -1,0 +1,164 @@
+x-airflow-common:
+  &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__LOGGING_LEVEL: 'INFO'
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:-46DuVWSZg7Y7c-Z_wN4O6un9O6wS5O6X7_v_Z8_X9uM=}
+  volumes:
+    - ./.env:/opt/airflow/.env
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./spark/jobs:/opt/airflow/spark/jobs
+    - ./spark/jars:/opt/airflow/spark/jars
+    - /var/run/docker.sock:/var/run/docker.sock
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # --- METADATA DATABASE FOR AIRFLOW ---
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  # --- AIRFLOW COMPONENTS ---
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/{logs,dags,plugins,spark/jobs}
+        chmod +x /opt/airflow/spark/spark-submit-remote.py
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/
+        /entrypoint airflow db migrate && \
+        airflow connections delete spark_default 2>/dev/null || true && \
+        airflow connections add spark_default \
+          --conn-type spark \
+          --conn-host spark://spark-master:7077 && \
+        airflow users create --username airflow --password airflow --firstname Airflow --lastname Admin --role Admin --email admin@example.com
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+
+  # --- DATA LAKE (MINIO) ---
+  minio:
+    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+
+  # --- DWH (GREENPLUM WITH PXF) ---
+  greenplum:
+    image: pro100filipp/greenplum-with-pxf:latest
+    ports:
+      - "5432:5432"
+    environment:
+      GP_USER: gpadmin
+      GP_PASSWORD: gpadmin
+      GP_DB: taxi_dwh
+    volumes:
+      - gp_data:/srv
+      - ./pxf/servers/minio:/home/gpdb/pxf-base/servers/minio
+    hostname: gpdb-sandbox
+
+  # --- COMPUTE LAYER (SPARK) ---
+  spark-master:
+    image: docker.io/bitnamilegacy/spark:4.0
+    user: "0"
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+    ports:
+      - '8085:8080' # Web UI
+      - '7077:7077' # Cluster port
+    volumes:
+      - ./spark/jobs:/opt/bitnami/spark/jobs
+
+  spark-worker:
+    image: docker.io/bitnamilegacy/spark:4.0
+    user: "0"
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+    depends_on:
+      - spark-master
+    volumes:
+      - ./spark/jobs:/opt/bitnami/spark/jobs
+
+  # --- DATA MART (CLICKHOUSE) ---
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "8123:8123" # HTTP для DBeaver
+      - "9004:9000" # Развели конфликт портов с MinIO
+    environment:
+      - CLICKHOUSE_DB=taxi_mart
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - ch_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+volumes:
+  postgres-db-volume:
+  gp_data:
+  ch_data:
